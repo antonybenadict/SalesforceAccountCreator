@@ -48,7 +48,7 @@ namespace SalesforceAccountCreator
 
             try
             {
-                var authToken = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{password}"));
+                var authToken = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{fullPassword}"));
                 var client = new HttpClient();
 
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", authToken);
