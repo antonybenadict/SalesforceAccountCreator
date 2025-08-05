@@ -10,11 +10,22 @@ using Microsoft.VisualStudio.Shell.Interop;
 using Newtonsoft.Json.Linq;
 using System.Windows.Forms;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement.StartPanel;
+using System.Xml;
 
 namespace SalesforceAccountCreator
 {
+
     internal sealed class CreateAccountCommand
     {
+        static string accountname = "Antony";
+        static string username = "candidate@ses.com";
+        static string password = "GuestPOC123";
+        static string securityToken = "sTLZlCcOhtTWoPKzWNEMVQMx4";
+        static string apiVersion = "v56.0"; 
+        static string loginUrl = "https://login.salesforce.com/services/Soap/u/56.0";
+        //static string loginUrl = "https://login.salesforce.com/services/oauth2/token";
+        static string restEndpoint = "https://orgfarm-3ad4e46dbc-dev-ed.develop.my.salesforce.com/services/apexrest/AccountManager/CreateAccount";
+
         private const int CommandId = 0x0100;
         private static readonly Guid CommandSet = new Guid("eaa2df79-81a7-4849-bb12-1f46eed15232");
         private readonly AsyncPackage package;
@@ -39,47 +50,103 @@ namespace SalesforceAccountCreator
         private async Task ExecuteAsync()
         {
             MessageBox.Show("Clicked");
-            const string url = "https://orgfarm-3ad4e46dbc-dev-ed.develop.my.salesforce.com/services/apexrest/AccountManager/CreateAccount";
-            const string username = "candidate@ses.com";
-            const string password = "GuestPOC123";
-            const string token = "sTLZlCcOhtTWoPKzWNEMVQMx4";
-            string fullPassword = password + token;
-
-
             try
             {
-                var authToken = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{fullPassword}"));
-                var client = new HttpClient();
+                var (sessionId, instanceUrl) = await LoginToSalesforce();
 
-                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", authToken);
-                client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-                var accountData = new { Name = UserName };
-                var json = JsonConvert.SerializeObject(accountData);
-                var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-
-                var response = await client.PostAsync(url, content);
-                var responseContent = await response.Content.ReadAsStringAsync();
-
-                VsShellUtilities.ShowMessageBox(
-                    package,
-                    $"Response Status: {response.StatusCode}\nResponse Body: {responseContent}",
-                    "Salesforce Webhook Response",
-                    OLEMSGICON.OLEMSGICON_INFO,
-                    OLEMSGBUTTON.OLEMSGBUTTON_OK,
-                    OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
+                if (!string.IsNullOrEmpty(sessionId))
+                {
+                    await CallRestAPI(instanceUrl, sessionId);
+                }
             }
             catch (Exception ex)
             {
-                VsShellUtilities.ShowMessageBox(
-                    package,
-                    $"Error sending request: {ex.Message}",
-                    "Error",
-                    OLEMSGICON.OLEMSGICON_CRITICAL,
-                    OLEMSGBUTTON.OLEMSGBUTTON_OK,
-                    OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
+                ShowMessage("Error: " + ex.Message);
             }
+        }
+
+        private async Task<(string sessionId, string instanceUrl)> LoginToSalesforce()
+        {
+            string soapRequest = $@"<?xml version=""1.0"" encoding=""utf-8"" ?>
+            <env:Envelope xmlns:xsd=""http://www.w3.org/2001/XMLSchema""
+                          xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance""
+                          xmlns:env=""http://schemas.xmlsoap.org/soap/envelope/"">
+              <env:Body>
+                <n1:login xmlns:n1=""urn:partner.soap.sforce.com"">
+                  <n1:username>{username}</n1:username>
+                  <n1:password>{password}{securityToken}</n1:password>
+                </n1:login>
+              </env:Body>
+            </env:Envelope>";
+
+            using (HttpClient client = new HttpClient())
+            {
+                var content = new StringContent(soapRequest, Encoding.UTF8, "text/xml");
+                content.Headers.Clear();
+                content.Headers.Add("Content-Type", "text/xml; charset=UTF-8");
+                content.Headers.Add("SOAPAction", "login");
+
+                HttpResponseMessage response = await client.PostAsync(loginUrl, content);
+                string responseString = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    XmlDocument xml = new XmlDocument();
+                    xml.LoadXml(responseString);
+
+                    var sessionId = xml.GetElementsByTagName("sessionId")[0]?.InnerText;
+                    var serverUrl = xml.GetElementsByTagName("serverUrl")[0]?.InnerText;
+
+                    Uri uri = new Uri(serverUrl);
+                    string instanceUrl = uri.GetLeftPart(UriPartial.Authority);
+
+                    return (sessionId, instanceUrl);
+                }
+                else
+                {
+                    throw new Exception("Login failed: " + responseString);
+                }
+            }
+        }
+
+        private async Task CallRestAPI(string instanceUrl, string sessionId)
+        {
+            //string endpoint = "https://orgfarm-3ad4e46dbc-dev-ed.develop.my.salesforce.com/services/apexrest/AccountManager/CreateAccount";
+            //string endpoint = instanceUrl + "/services/apexrest/AccountManager/CreateAccount";
+            string endpoint = $"{instanceUrl}/services/data/{apiVersion}/sobjects/Account/";
+
+            using (HttpClient client = new HttpClient())
+            {
+                client.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", sessionId);
+
+                //var jsonBody = $"{{ \"Name\": \"{accountname}\" }}";
+                var jsonBody = "{\"Name\": \"Antony\"}";
+                var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+                HttpResponseMessage response = await client.PostAsync(endpoint, content);
+                string result = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    ShowMessage("Account created successfully.");
+                }
+                else
+                {
+                    ShowMessage("Failed to create account: " + result);
+                }
+            }
+        }
+
+        private void ShowMessage(string message)
+        {
+            VsShellUtilities.ShowMessageBox(
+                this.package,
+                message,
+                "Salesforce Integration",
+                OLEMSGICON.OLEMSGICON_INFO,
+                OLEMSGBUTTON.OLEMSGBUTTON_OK,
+                OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
         }
     }
 }
